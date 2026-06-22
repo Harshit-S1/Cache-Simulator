@@ -15,16 +15,19 @@
 using namespace std;
 typedef unsigned long long ull;
 
-// Added PLRU (6) and OPT (7)
+// the available replacement and write policies
 enum ReplacementPolicy { LRU = 0, LFU = 1, FIFO = 2, RANDOM = 3, SRRIP = 4, NRU = 5, PLRU = 6, OPT = 7 };
 enum WritePolicy { WRITE_THROUGH = 0, WRITE_BACK = 1 };
 
+// struct to group the results of a cache eviction
 struct EvictionResult {
     bool valid = false; 
     ull block_addr = 0;
     bool dirty = false;
 };
 
+// Base class for a cache set. 
+// All the specific replacement policies inherit from this and implement the virtual functions.
 class CacheSet {
 protected:
     int associativity;
@@ -38,6 +41,7 @@ public:
     virtual void mark_dirty(ull block_addr) = 0;
 };
 
+// buffer to hold recent write requests to hide write latencies from the CPU
 class WriteBuffer {
     int capacity;
     list<ull> buffer_queue; 
@@ -48,6 +52,7 @@ public:
 
     WriteBuffer(int cap) : capacity(cap) {}
 
+    // checking if the data we are trying to read happens to be sitting in the write buffer
     bool check_read(ull block_addr) {
         if (capacity > 0 && buffer_set.find(block_addr) != buffer_set.end()) {
             hits++;
@@ -56,6 +61,7 @@ public:
         return false;
     }
 
+    // adding a new write to the buffer and if it gets full, flush the oldest entry.
     EvictionResult push_write(ull block_addr) {
         EvictionResult flush;
         if (capacity == 0) {
@@ -81,6 +87,7 @@ public:
     }
 };
 
+// simple next-line prefetcher which loads data into L2
 class Prefetcher {
 public:
     int prefetches_issued = 0;
@@ -90,8 +97,7 @@ public:
     }
 };
 
-/* --- EXISTING POLICIES (LRU, FIFO, RANDOM, LFU, NRU, SRRIP) REMAIN UNCHANGED --- */
-
+// Least Recently Used - tracks usage using a doubly-linked list
 class LRUSet : public CacheSet {
     list<ull> lru_list; 
     unordered_map<ull, list<ull>::iterator> cache_map;
@@ -146,6 +152,7 @@ public:
     }
 };
 
+// First-In First-Out: evicts the oldest loaded block regardless of recent usage
 class FIFOSet : public CacheSet {
     list<ull> fifo_list;
     unordered_map<ull, list<ull>::iterator> cache_map;
@@ -192,6 +199,7 @@ public:
     }
 };
 
+// Random Replacement: Just picks an eviction target randomly
 class RandomSet : public CacheSet {
     struct Block { ull block_addr; bool dirty; };
     vector<Block> blocks;
@@ -236,6 +244,7 @@ public:
     }
 };
 
+// Least Frequently Used: Keeps a active record of access counts per block
 class LFUSet : public CacheSet {
     struct BlockMeta { int frequency; bool dirty; list<ull>::iterator list_it; };
     unordered_map<ull, BlockMeta> cache_map;
@@ -305,6 +314,7 @@ public:
     }
 };
 
+// Not Recently Used: Uses a single reference bit per block to approximate LRU
 class NRUSet : public CacheSet {
     struct Block { ull block_addr; bool ref_bit; bool dirty; };
     vector<Block> blocks;
@@ -356,6 +366,7 @@ public:
     }
 };
 
+// Static Re-Reference Interval Prediction (SRRIP)
 class SRRIPSet : public CacheSet {
     struct Block { ull block_addr; int rrpv; bool dirty; };
     vector<Block> blocks;
@@ -409,7 +420,9 @@ public:
     }
 };
 
-/* --- NEW: Tree-PLRU (Pseudo-LRU) --- */
+// Tree-PLRU (Pseudo-LRU)
+// Uses a binary tree of directional bits to point away from recently used blocks,
+// providing near-LRU performance with much less hardware overhead (much more practical than LRU)
 class PLRUSet : public CacheSet {
     struct Block { ull block_addr; bool dirty; bool valid; };
     vector<Block> blocks;
@@ -419,7 +432,7 @@ public:
     PLRUSet(int assoc) : CacheSet(assoc), blocks(assoc, {0, false, false}), 
                          tree(assoc > 1 ? assoc - 1 : 1, false) {}
 
-    // Flip the bits to point AWAY from the most recently accessed leaf
+    // Flip the bits to point away from the most recently accessed leaf
     void update_tree(int leaf_idx) {
         if (associativity == 1) return;
         int node = 0;
@@ -453,7 +466,7 @@ public:
     EvictionResult allocate(ull block_addr, bool is_write) override {
         EvictionResult res;
         
-        // Always fill empty lines first
+        // empty lines are filled first before evicting
         int evict_idx = -1;
         for (int i = 0; i < associativity; ++i) {
             if (!blocks[i].valid) {
@@ -462,7 +475,7 @@ public:
             }
         }
 
-        // If full, traverse the tree to find the pseudo-oldest block
+        // If full, tree is traversed to find the pseudo-oldest block
         if (evict_idx == -1 && associativity > 1) {
             int node = 0;
             int left_bound = 0;
@@ -515,7 +528,9 @@ public:
     }
 };
 
-/* --- NEW: Bélády's Optimal (The Oracle) --- */
+// Bélády's Optimal
+// Peeks into the future reference queue to mathematically determine the best
+// possible eviction target, Used purely to establish a benchmark ceiling (not practical)
 class OPTSet : public CacheSet {
     struct Block { ull block_addr; bool dirty; bool valid; };
     vector<Block> blocks;
@@ -539,6 +554,7 @@ public:
     EvictionResult allocate(ull block_addr, bool is_write) override {
         EvictionResult res;
         
+        // empty slots are grabbed first
         for (int i = 0; i < associativity; ++i) {
             if (!blocks[i].valid) {
                 blocks[i] = {block_addr, is_write, true};
@@ -549,18 +565,18 @@ public:
         int evict_idx = 0;
         ull max_future_time = 0;
 
-        // Greedily search for the block needed furthest in the future
+        // greedily searching for the block needed furthest in the future
         for (int i = 0; i < associativity; ++i) {
             ull b_addr = blocks[i].block_addr;
             
-            // Clean up stale past accesses ensuring we only look forward
+            // cleaning up stale past accesses ensuring we only look forward
             while (!(*future_refs)[b_addr].empty() && (*future_refs)[b_addr].front() <= *global_time) {
                 (*future_refs)[b_addr].pop();
             }
 
             if ((*future_refs)[b_addr].empty()) {
                 evict_idx = i;
-                break; // Never accessed again! Perfect eviction target.
+                break; // if never accessed again then perfect eviction target.
             }
             
             ull next_time = (*future_refs)[b_addr].front();
@@ -600,6 +616,8 @@ public:
     }
 };
 
+// Represents a single level in the cache hierarchy (e.g., L1, L2)
+// Manages multiple CacheSets derived from the requested size and associativity
 class CacheLevel {
     int num_sets;
     int block_size;
@@ -609,7 +627,7 @@ public:
     ull hits = 0;
     ull misses = 0;
 
-    // Added future_refs parameter
+    // future_refs parameter added to pass down to the OPT sets if active
     CacheLevel(int cache_size_bytes, int block_size_bytes, int assoc, ReplacementPolicy rep_policy, 
                ull& global_time, unordered_map<ull, queue<ull>>* future_refs = nullptr) {
         block_size = block_size_bytes;
@@ -627,6 +645,7 @@ public:
         }
     }
 
+    // functions to map a block address to its corresponding set
     bool check_and_update(ull block_addr, bool is_write) {
         return sets[block_addr % num_sets]->check_hit(block_addr, is_write);
     }
@@ -641,6 +660,7 @@ public:
     }
 };
 
+// The main system containing all cache levels and microarchitectural additions
 class CacheHierarchy {
     int block_size;
     ReplacementPolicy rep_policy;
@@ -661,7 +681,7 @@ class CacheHierarchy {
     ull mem_writes = 0;
 
 public:
-    // Added future_refs ptr
+    // all levels of the cache hierarchy are setup here
     CacheHierarchy(int b_size, int l1i_sz, int l1i_as, int l1d_sz, int l1d_as, 
                    int l2_sz, int l2_as, int l3_sz, int l3_as, 
                    int wb_entries, int vc_entries,
@@ -687,6 +707,7 @@ public:
         }
     }
 
+    // handles the flow of the memory request
     void access_memory(char op, ull address) {
         global_time++;
         total_accesses++;
@@ -695,12 +716,15 @@ public:
         bool is_inst = (op == 'I');
         ull block_addr = address / block_size;
 
+        // the access is either to the Instruction or to the Data L1 cache
         CacheLevel* target_l1 = is_inst ? l1i.get() : l1d.get();
 
+        // 1. Write Buffer is checked first for recent data reads
         if (!is_write && !is_inst) { 
             if (wb->check_read(block_addr)) return; 
         }
 
+        // 2. handles writes into the buffer
         if (is_write) {
             EvictionResult flushed = wb->push_write(block_addr);
             if (!flushed.valid) return; 
@@ -709,12 +733,14 @@ public:
             is_write = true; 
         }
 
+        // 3. checking L1 Hits
         if (target_l1->check_and_update(block_addr, is_write)) {
             target_l1->hits++;
             return;
         }
         target_l1->misses++;
 
+        // 4. try the victim Cache (if it's a data request and VC is enabled)
         if (!is_inst && victim_cache && victim_cache->check_and_update(block_addr, is_write)) {
             victim_cache->hits++;
             EvictionResult l1_evict = target_l1->allocate(block_addr, is_write);
@@ -723,6 +749,7 @@ public:
         }
         if (!is_inst && victim_cache) victim_cache->misses++;
       
+        // 5. Cascade Misses down to L2 and L3, managing inclusions and write-backs along the way
         if (l2->check_and_update(block_addr, false)) { 
             l2->hits++;
         } else {
@@ -731,7 +758,7 @@ public:
                 l3->hits++;
             } else {
                 l3->misses++;
-                mem_reads++; 
+                mem_reads++; // main Memory access required if not found in any
 
                 EvictionResult e3 = l3->allocate(block_addr, false);
                 if (e3.valid) {
@@ -756,6 +783,7 @@ public:
             }
         }
 
+        // 6. Final allocations and cleanups at the L1 level
         EvictionResult e1 = target_l1->allocate(block_addr, is_write);
         if (e1.valid) {
             if (!is_inst && victim_cache) {
@@ -770,10 +798,12 @@ public:
 
         if (is_write && write_policy == WRITE_THROUGH) mem_writes++;
 
+        // 7. the prefetcher loads adjacent data
         ull prefetch_addr = prefetcher->get_prefetch_target(block_addr);
         if (!l2->check_and_update(prefetch_addr, false)) l2->allocate(prefetch_addr, false);
     }
 
+    // printing all the collected metrics to the terminal
     void print_stats() {
         string p_name;
         switch(rep_policy) {
@@ -825,6 +855,7 @@ public:
 };
 
 int main(int argc, char* argv[]) {
+    // basic argument parsing and validation, if not correct then prints the format to the terminal
     if (argc != 15) {
         cerr << "Usage: " << argv[0] << " <block_size> "
              << "<L1i_size> <L1i_assoc> "
@@ -836,7 +867,6 @@ int main(int argc, char* argv[]) {
              << "<write_pol: 0=WT, 1=WB> <trace_file.out>\n";
         return 1;
     }
-
     int block_size = stoi(argv[1]);
     int l1i_size = stoi(argv[2]);
     int l1i_assoc = stoi(argv[3]);
@@ -857,36 +887,36 @@ int main(int argc, char* argv[]) {
         cerr << "Error: Could not open trace file " << trace_file << "\n";
         return 1;
     }
-
-    // THE TWO-PASS ARCHITECTURE
+    // The Two Pass Architecture
+    // Required to establish the future timeline for Bélády's Optimal Policy
     vector<pair<char, ull>> trace;
     unordered_map<ull, queue<ull>> future_refs;
     char op;
     ull address;
     ull seq = 1;
-
-    // Pass 1: Pre-compute the future
+    // pass 1: pre-computing the future
+    // scanning the trace file entirely to build a timeline of when each address will be needed next
     while (infile >> op >> hex >> address) {
         if (op == 'R' || op == 'W' || op == 'I') {
             trace.push_back({op, address});
             if (r_policy == OPT) {
-                // Record the exact sequence number this block address is accessed
+                // recording the exact sequence number this block address is accessed
                 future_refs[address / block_size].push(seq);
             }
             seq++;
         }
     }
     infile.close();
-
+    // the cache hierarchy established with our extracted arguments
     CacheHierarchy hierarchy(block_size, l1i_size, l1i_assoc, l1d_size, l1d_assoc, 
                              l2_size, l2_assoc, l3_size, l3_assoc, 
                              wb_entries, vc_entries, r_policy, w_policy, &future_refs);
 
-    // Pass 2: Run Simulation
+    // Pass 2: Running Simulation
+    // feeding the stored operations through our initialized memory architecture
     for (const auto& t : trace) {
         hierarchy.access_memory(t.first, t.second);
     }
-
     hierarchy.print_stats();
     return 0;
 }

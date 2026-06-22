@@ -9,15 +9,17 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+# Setting up the main page look and title
 st.set_page_config(page_title="Cache Simulator UI", layout="wide")
 st.title("Multi-Level Cache Simulator & PinTool Profiler")
 
 st.markdown("""
 Upload a compiled C/C++ executable. The system will use **Intel PIN** to trace its memory accesses 
-and run it through the **3-Level Inclusive Cache Simulator**.
+and run it through the **3-Level Inclusive Cache Simulator**
 """)
 
-# --- STATE MANAGEMENT ---
+# State Management
+# Keeping track of things between clicks so we don't repeat heavy tasks
 if "trace_ready" not in st.session_state:
     st.session_state.trace_ready = False
 if "last_filename" not in st.session_state:
@@ -25,11 +27,13 @@ if "last_filename" not in st.session_state:
 if "last_max_accesses" not in st.session_state:
     st.session_state.last_max_accesses = None
 
-# --- SIDEBAR CONFIGURATION ---
+# Sidebar Configuration
 st.sidebar.header("Cache Specifications")
 
+# Basic block sizing
 block_size = st.sidebar.selectbox("Block Size (Bytes)", [16, 32, 64, 128], index=2)
 
+# L1d, L1i, L2, L3 sizes and associativity
 st.sidebar.subheader("L1 Instruction Cache (L1i)")
 l1i_size = st.sidebar.number_input("L1i Size (Bytes)", min_value=1024, value=32768, step=1024)
 l1i_assoc = st.sidebar.selectbox("L1i Associativity", [1, 2, 4, 8, 16], index=3)
@@ -38,6 +42,7 @@ st.sidebar.subheader("L1 Data Cache (L1d)")
 l1d_size = st.sidebar.number_input("L1d Size (Bytes)", min_value=1024, value=49152, step=1024)
 l1d_assoc = st.sidebar.selectbox("L1d Associativity", [1, 2, 4, 8, 16], index=4) 
 
+# the additional microarchitecture features
 st.sidebar.subheader("Advanced Microarchitecture")
 wb_entries = st.sidebar.slider("Write Buffer Entries", min_value=0, max_value=64, value=8, step=4)
 vc_entries = st.sidebar.slider("Victim Cache Entries", min_value=0, max_value=64, value=8, step=4)
@@ -51,6 +56,7 @@ l3_size = st.sidebar.number_input("L3 Size (Bytes)", min_value=1024, value=20971
 l3_assoc = st.sidebar.selectbox("L3 Associativity", [1, 2, 4, 8, 16, 32], index=4)
 
 st.sidebar.subheader("Policies")
+# Mapping the dropdown text to the C++ enum values
 replace_policy_map = {
     "LRU": 0, "LFU": 1, "FIFO": 2, "Random": 3, 
     "SRRIP": 4, "NRU": 5, "Tree-PLRU": 6, "Bélády (OPT)": 7
@@ -63,10 +69,12 @@ write_policy_str = st.sidebar.selectbox("Write Policy", list(write_policy_map.ke
 rep_policy = replace_policy_map[rep_policy_str]
 write_policy = write_policy_map[write_policy_str]
 
+# can be toggled to run the optimal Belady benchmark comparison
 st.sidebar.subheader("Evaluation Options")
 run_opt_benchmark = st.sidebar.checkbox("Compare against Bélády's Optimal (Theoretical Max)", value=False, 
-                                        help="Runs the simulator twice to compare your selected policy against the mathematical ceiling. (Takes slightly longer).")
+                                        help="Runs the simulator twice to compare your selected policy against the mathematical ceiling. (Takes slightly longer)")
 
+# wait times can be given as input according to the hardware to calculate AMAT
 st.sidebar.subheader("Simulated Latencies (Cycles)")
 l1_lat = st.sidebar.slider("L1 Latency", 1, 5, 2)
 l2_lat = st.sidebar.slider("L2 Latency", 5, 20, 10)
@@ -79,9 +87,10 @@ max_accesses = st.sidebar.number_input(
     min_value=0, 
     value=500000, 
     step=100000,
-    help="Limits the trace file size. Set to 0 to trace the entire program."
+    help="Limits the trace file size. Set to 0 to trace the entire program"
 )
 
+# Paths to the codes in the user's machine
 st.sidebar.subheader("System Paths")
 PIN_EXECUTABLE = st.sidebar.text_input("PIN Executable Path", "/home/harshit/pin_kit/pin")
 PIN_TOOL = st.sidebar.text_input("PIN Tool (.so) Path", "/home/harshit/pin_kit/source/tools/MyPinTool/obj-intel64/MyPinTool.so")
@@ -89,13 +98,15 @@ CACHE_SIMULATOR = st.sidebar.text_input("Simulator Executable Path", "./cacheSim
 
 uploaded_file = st.file_uploader("Upload your target executable file", type=None)
 
-# --- HELPER FUNCTIONS ---
+# Helper Functions
+# going through the C++ terminal output with regex to find the numbers
 def extract_stat(pattern, text, is_float=False):
     match = re.search(pattern, text)
     if match:
         return float(match.group(1)) if is_float else int(match.group(1))
     return 0
 
+# Executing the compiled C++ cache simulator and parsing its standard output
 def run_cache_simulator(target_policy_id):
     sim_cmd = [
         CACHE_SIMULATOR, 
@@ -111,6 +122,7 @@ def run_cache_simulator(target_policy_id):
     result = subprocess.run(sim_cmd, check=True, stdout=subprocess.PIPE, text=True)
     out = result.stdout
     
+    # extracting the simulation statistics using regular expressions and return them as a dictionary
     return {
         "output": out,
         "l1i_hits": extract_stat(r"L1i Hits:\s+(\d+)", out),
@@ -132,12 +144,14 @@ def run_cache_simulator(target_policy_id):
         "total_accesses": extract_stat(r"Total Accesses:\s+(\d+)", out)
     }
 
-# --- MAIN EXECUTION ---
+# Main Execution
+# the simulation workflow is triggered when the primary button is clicked
 if st.button("Run Simulation", type="primary"):
     if uploaded_file is None:
-        st.error("Please upload an executable test file first.")
+        st.error("Please upload an executable test file first")
     else:
-        # 1. TRACE GENERATION (Only runs if file or limits changed)
+        # 1. Trace Generation (Only runs if file or limits changed to save time)
+        # checking if the file or constraints have changed to avoid redundant PIN tool executions
         file_changed = (st.session_state.last_filename != uploaded_file.name)
         limits_changed = (st.session_state.last_max_accesses != max_accesses)
         
@@ -146,7 +160,7 @@ if st.button("Run Simulation", type="primary"):
                 with tempfile.NamedTemporaryFile(delete=False) as tmp:
                     tmp.write(uploaded_file.read())
                     exe_path = tmp.name
-                os.chmod(exe_path, 0o755) 
+                os.chmod(exe_path, 0o755) # giving execution permissions to the temp file
 
                 pin_cmd = [
                     PIN_EXECUTABLE, 
@@ -157,18 +171,20 @@ if st.button("Run Simulation", type="primary"):
                 
                 try:
                     subprocess.run(pin_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    # updating session state to cache the trace generation results
                     st.session_state.trace_ready = True
                     st.session_state.last_filename = uploaded_file.name
                     st.session_state.last_max_accesses = max_accesses
                     st.success("Memory trace generated and cached successfully!")
                 except subprocess.CalledProcessError as e:
-                    st.error(f"PIN Tool execution failed. Ensure PIN paths are correct.\n{e.stderr.decode()}")
+                    st.error(f"PIN Tool execution failed. Ensure PIN paths are correct\n{e.stderr.decode()}")
                     st.stop()
                 finally:
-                    os.unlink(exe_path) # Clean up executable, keep the trace
+                    os.unlink(exe_path) # the temporary executable is removed and the trace file is retained for simulation
                     
-        # Parse workload characteristics
-        with st.spinner("Analyzing Workload Characteristics..."):
+        # Parsing workload characteristics
+        # counting the occurrences of instruction fetches ('I'), reads ('R'), and writes ('W') in the trace
+        with st.spinner("Analyzing Workload Characteristics"):
             op_counts = {'I': 0, 'R': 0, 'W': 0}
             if os.path.exists("memory_trace.out"):
                 with open("memory_trace.out", "r") as f:
@@ -178,25 +194,27 @@ if st.button("Run Simulation", type="primary"):
                             if parts[0] in op_counts:
                                 op_counts[parts[0]] += 1
 
-        # 2. RUN CACHE SIMULATOR (Main Policy)
-        with st.spinner(f"Running Cache Simulation ({rep_policy_str})..."):
+        # 2. Running Cache Simulator (Main Policy)
+        # executing the simulator using the user-selected replacement policy
+        with st.spinner(f"Running Cache Simulation ({rep_policy_str})"):
             try:
                 stats = run_cache_simulator(rep_policy)
             except subprocess.CalledProcessError:
-                st.error("Cache Simulator failed.")
+                st.error("Cache Simulator failed")
                 st.stop()
 
-        # 3. RUN ORACLE SIMULATOR (If checked and not already running OPT)
+        # 3. Run for Belady configuration (If checked and not already running OPT)
+        # optionally running Bélády's Optimal policy to establish a theoretical performance ceiling
         opt_stats = None
         if run_opt_benchmark and rep_policy != 7:
-            with st.spinner("Running Bélády's Optimal Benchmark (Pass 1 & 2)..."):
+            with st.spinner("Running Bélády's Optimal Benchmark (Pass 1 & 2)"):
                 try:
                     opt_stats = run_cache_simulator(7)
                 except subprocess.CalledProcessError:
-                    st.error("Optimal Cache Simulator failed.")
+                    st.error("Optimal Cache Simulator failed")
                     st.stop()
 
-        # --- RENDER DASHBOARD ---
+        # Dashboard Render
         st.subheader("Simulation Results")
 
         # Workload Profile
@@ -253,28 +271,27 @@ if st.button("Run Simulation", type="primary"):
         # AMAT & Bus Traffic
         st.markdown("### Performance Estimation")
         
-        # 1. Combine L1 Instruction (L1i) and Data (L1d) statistics
+        # 1. combining L1 Instruction (L1i) and Data (L1d) statistics to obtain the L1 statistics as one
         total_l1_accesses = stats['l1i_hits'] + stats['l1i_miss'] + stats['l1d_hits'] + stats['l1d_miss']
         total_l1_misses = stats['l1i_miss'] + stats['l1d_miss']
 
-        # 2. Start AMAT calculation with the base L1 latency
+        # 2. AMAT calculation with the base L1 latency
         amat = l1_lat
         
-        # 3. Add L2 penalty based on the COMBINED L1 miss rate
+        # 3. L2 penalty added based on the combined L1 miss rate
         if total_l1_accesses > 0:
             amat += ((total_l1_misses / total_l1_accesses) * l2_lat)
             
-        # 4. Add L3 penalty based on L2 miss rate
+        # 4. L3 penalty added based on L2 miss rate
         if (stats['l2_hits'] + stats['l2_miss']) > 0:
             amat += ((stats['l2_miss'] / (stats['l2_hits'] + stats['l2_miss'])) * l3_lat)
             
-        # 5. Add Main Memory penalty based on L3 miss rate
+        # 5. Main Memory added penalty based on L3 miss rate
         if (stats['l3_hits'] + stats['l3_miss']) > 0:
             amat += ((stats['l3_miss'] / (stats['l3_hits'] + stats['l3_miss'])) * mem_lat)
             
         col1, col2, col3 = st.columns(3)
-        # 6. Update the UI help text to reflect the new global formula
-        col1.metric("Average Memory Access Time (AMAT)", f"{amat:.2f} Cycles", help="Calculated using combined Instruction (L1i) and Data (L1d) requests as the baseline.")
+        col1.metric("Average Memory Access Time (AMAT)", f"{amat:.2f} Cycles", help="Calculated using combined Instruction (L1i) and Data (L1d) requests as the baseline")
         col2.metric("Bus Traffic (Reads)", f"{stats['mem_reads']:,}")
         col3.metric("Bus Traffic (Writes)", f"{stats['mem_writes']:,}")
         st.divider()
@@ -283,12 +300,13 @@ if st.button("Run Simulation", type="primary"):
         st.markdown("### Data Resolution Hierarchy")
         st.markdown("Where did the CPU successfully find the requested data?")
         
+        # constructing the dataset representing where data was successfully found
         pie_data = {
             "Source": ["L1i Cache", "L1d Cache", "Write Buffer", "Victim Cache", "L2 Cache", "L3 Cache", "Main Memory"],
             "Hits": [stats['l1i_hits'], stats['l1d_hits'], stats['wb_hits'], stats['vc_hits'], stats['l2_hits'], stats['l3_hits'], stats['l3_miss']]
         }
         df = pd.DataFrame(pie_data)
-        df = df[df["Hits"] > 0] 
+        df = df[df["Hits"] > 0] # filters out cache levels with zero hits to maintain chart clarity
 
         if not df.empty:
             fig_pie = px.pie(df, values='Hits', names='Source', hole=0.4, color_discrete_sequence=px.colors.sequential.Tealgrn)
@@ -299,9 +317,10 @@ if st.button("Run Simulation", type="primary"):
         
         # Memory Access Heatmap
         st.subheader("Memory Access Heatmap")
-        st.markdown("This chart visualizes spatial and temporal locality. The **X-axis** is time (sequence of access), and the **Y-axis** is the memory address.")
+        st.markdown("This chart visualizes spatial and temporal locality. The **X-axis** is time (sequence of access), and the **Y-axis** is the memory address")
         
-        with st.spinner("Generating heatmap..."):
+        # generating a hexbin plot to visualize memory access density and pattern over time
+        with st.spinner("Generating heatmap"):
             try:
                 times = []
                 addresses = []
@@ -324,8 +343,10 @@ if st.button("Run Simulation", type="primary"):
                     ax.set_xlabel("Access Sequence (Time)", color='white')
                     ax.set_ylabel("Memory Address", color='white')
                     
+                    # the Y-axis labels are formatted to display addresses in hexadecimal
                     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, pos: f"0x{int(x):X}"))
                     
+                    # custom styling to match the application's dark theme
                     fig.patch.set_facecolor('#0E1117') 
                     ax.set_facecolor('#0E1117')
                     ax.tick_params(colors='white', which='both')
@@ -336,10 +357,11 @@ if st.button("Run Simulation", type="primary"):
 
                     st.pyplot(fig)
                 else:
-                    st.warning("No valid memory addresses found in the trace file to generate a heatmap.")
+                    st.warning("No valid memory addresses found in the trace file to generate a heatmap")
 
             except Exception as e:
                 st.error(f"Failed to generate heatmap: {e}")
                 
+        # an expandable section to view the raw standard output from the simulator in the terminal
         with st.expander("View Raw Terminal Output"):
             st.code(stats['output'], language="text")
