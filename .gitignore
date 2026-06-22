@@ -1,0 +1,51 @@
+# C/C++ Build Files
+*.o
+*.obj
+*.out
+*.exe
+*.a
+*.so
+*.dll
+
+# Generated executables
+cacheSimulator
+analyzer
+
+# Intel PIN
+obj-intel64/
+*.d
+*.dep
+
+# Generated memory traces
+memory_trace.out
+*.trace
+
+# Python
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+venv/
+env/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# VS Code
+.vscode/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Temporary Files
+tmp/
+temp/
+*.log
+
+# Keep Documentation
+!README.md
+!docs/
+!screenshots/
