@@ -12,7 +12,9 @@ The project enables users to profile real executables, generate memory traces, s
 
 ## System Architecture
 
-![Architecture](docs/architecture.png)
+<p align="center">
+  <img src="docs/architecture.png" width="550"/>
+</p>
 
 ---
 
