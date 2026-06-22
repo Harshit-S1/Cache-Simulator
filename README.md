@@ -3,6 +3,7 @@
 ![C++](https://img.shields.io/badge/C++-17-blue)
 ![Intel PIN](https://img.shields.io/badge/Intel-PIN-orange)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red)
+![Python](https://img.shields.io/badge/Python-3.8+-green)
 
 A configurable **3-Level Inclusive Cache Simulator** integrated with **Intel PIN** for dynamic memory tracing and a **Streamlit dashboard** for interactive visualization.
 
