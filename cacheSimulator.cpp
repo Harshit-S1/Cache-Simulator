@@ -429,8 +429,7 @@ class PLRUSet : public CacheSet {
     vector<bool> tree; // Binary tree storing the directional bits
 
 public:
-    PLRUSet(int assoc) : CacheSet(assoc), blocks(assoc, {0, false, false}), 
-                         tree(assoc > 1 ? assoc - 1 : 1, false) {}
+    PLRUSet(int assoc) : CacheSet(assoc), blocks(assoc, {0, false, false}), tree(assoc > 1 ? assoc - 1 : 1, false) {}
 
     // Flip the bits to point away from the most recently accessed leaf
     void update_tree(int leaf_idx) {
